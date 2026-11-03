@@ -1,0 +1,174 @@
+
+import streamlit as st
+import tensorflow as tf
+import numpy as np
+from PIL import Image
+import os
+
+# Page configuration
+st.set_page_config(
+    page_title="Cancer Classification",
+    page_icon="🔬",
+    layout="centered"
+)
+
+# Title
+st.title("🔬 Cancer Classification System")
+st.write(
+    "Upload a medical image to classify it into "
+    "Benign, Malignant, or No Disease."
+)
+
+# Model file
+MODEL_PATH = "cancer_cnn_int8.tflite"
+
+# Class names (alphabetical order from training)
+class_names = ["benign", "malignant", "no disease"]
+
+
+# Load TFLite model
+@st.cache_resource
+def load_model():
+    interpreter = tf.lite.Interpreter(
+        model_path=MODEL_PATH
+    )
+    interpreter.allocate_tensors()
+    return interpreter
+
+
+# Check model availability
+if not os.path.exists(MODEL_PATH):
+    st.error(
+        f"Model file not found: {MODEL_PATH}. "
+        "Please upload the model to your GitHub repository."
+    )
+    st.stop()
+
+try:
+    interpreter = load_model()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+except Exception as e:
+    st.error(f"Model loading error: {e}")
+    st.stop()
+
+
+# Image upload
+uploaded_file = st.file_uploader(
+    "Choose an image",
+    type=["jpg", "jpeg", "png"]
+)
+
+if uploaded_file is not None:
+
+    try:
+        image = Image.open(uploaded_file).convert("RGB")
+
+        st.image(
+            image,
+            caption="Uploaded Image",
+            use_container_width=True
+        )
+
+        if st.button("Predict", type="primary"):
+
+            # Resize image
+            image = image.resize((128, 128))
+
+            # Convert image to array
+            image_array = np.array(
+                image,
+                dtype=np.float32
+            )
+
+            image_array = np.expand_dims(
+                image_array, axis=0
+            )
+
+            # Get input information
+            input_index = input_details[0]["index"]
+            input_dtype = input_details[0]["dtype"]
+
+            # Quantize input if required
+            if input_dtype in (np.int8, np.uint8):
+
+                scale, zero_point = input_details[0]["quantization"]
+
+                if scale == 0:
+                    st.error("Invalid model input quantization.")
+                    st.stop()
+
+                image_array = np.round(
+                    image_array / scale + zero_point
+                )
+
+                limits = np.iinfo(input_dtype)
+
+                image_array = np.clip(
+                    image_array,
+                    limits.min,
+                    limits.max
+                ).astype(input_dtype)
+
+            else:
+                image_array = image_array.astype(input_dtype)
+
+            # Run prediction
+            interpreter.set_tensor(
+                input_index,
+                image_array
+            )
+
+            interpreter.invoke()
+
+            # Get prediction
+            output = interpreter.get_tensor(
+                output_details[0]["index"]
+            )[0]
+
+            # Dequantize output if required
+            output_dtype = output_details[0]["dtype"]
+
+            if output_dtype in (np.int8, np.uint8):
+
+                scale, zero_point = output_details[0]["quantization"]
+
+                output = (
+                    output.astype(np.float32) - zero_point
+                ) * scale
+
+            # Prediction result
+            predicted_index = int(np.argmax(output))
+            confidence = float(output[predicted_index]) * 100
+
+            st.subheader("Prediction Result")
+
+            st.success(
+                f"Prediction: {class_names[predicted_index].title()}"
+            )
+
+            st.metric(
+                "Confidence",
+                f"{confidence:.2f}%"
+            )
+
+            # Show all class probabilities
+            st.subheader("Class Probabilities")
+
+            for i, name in enumerate(class_names):
+                st.write(
+                    f"{name.title()}: {float(output[i]) * 100:.2f}%"
+                )
+
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
+
+
+st.divider()
+
+st.caption(
+    "CNN-based image classification project. "
+    "This application is for educational purposes only "
+    "and is not a medical diagnosis."
+)
